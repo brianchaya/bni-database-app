@@ -20,45 +20,65 @@ def ambil_kode_unik(text):
         return "N/A"
 
     text = str(text)
-
     lower = text.lower()
 
+    # =========================
     # MODEL 2 → OTOPAY ignore
+    # =========================
     if "otopay" in lower:
         return "IGNORE"
 
-    # MODEL 5 → JAKOM tanpa info tambahan ignore
-    if "jakom" in lower and "|" in text and len(text.split("|")) <= 3:
-        return "IGNORE"
-
-    # MODEL 7 → JAKOM dengan VA tambahan
-    m = re.search(r'(\d{16})\s+[A-Za-z]', text)
-    if m:
-        return m.group(1)
-
+    # =========================
     # MODEL 1 & 8
+    # PEMINDAHAN DARI
+    # =========================
     m = re.search(r'PEMINDAHAN DARI\s+(\d+)', text)
     if m:
         return m.group(1)
 
+    # =========================
     # MODEL 9
+    # VA di awal kalimat
+    # =========================
     m = re.search(r'\|\s*(\d{16})', text)
     if m:
         return m.group(1)
 
+    # =========================
+    # MODEL 7
+    # VA setelah JAKOM
+    # =========================
+    m = re.search(r'(\d{16})\s+[A-Za-z]', text)
+    if m:
+        return m.group(1)
+
+    # =========================
     # MODEL 3
+    # =========================
     m = re.search(r'PENGIRIM\s+(.*)', text)
     if m:
         return m.group(1).strip()
 
+    # =========================
     # MODEL 4
+    # =========================
     m = re.search(r'\|\s*\d+\s+[A-Z\s]+\s([A-Z\s]+)$', text)
     if m:
         return m.group(1).strip()
 
-    # MODEL 6 → nomor hilang
+    # =========================
+    # MODEL 6
+    # nomor hilang
+    # =========================
     if "pemindahan dari" in lower and "`" in text:
         return "N/A"
+
+    # =========================
+    # MODEL 5
+    # JAKOM tanpa info tambahan
+    # =========================
+    if "jakom" in lower:
+        return "IGNORE"
 
     return "N/A"
 
@@ -108,7 +128,9 @@ if uploaded_file:
 
     try:
 
-        # load file
+        # ==============================
+        # LOAD FILE
+        # ==============================
         if uploaded_file.name.endswith(".csv"):
 
             df = pd.read_csv(uploaded_file, sep=None, engine="python")
@@ -119,7 +141,9 @@ if uploaded_file:
 
             df = pd.read_excel(uploaded_file, header=header_row)
 
-        # detect column
+        # ==============================
+        # DETECT COLUMN
+        # ==============================
         id_col, desc_col = detect_columns(df)
 
         if desc_col is None:
@@ -132,7 +156,9 @@ if uploaded_file:
             st.write(df.columns)
             st.stop()
 
-        # extract
+        # ==============================
+        # PROCESS DATA
+        # ==============================
         df["KODE_UNIK"] = df[desc_col].apply(ambil_kode_unik)
 
         database = df[[id_col, "KODE_UNIK", desc_col]].copy()
@@ -150,13 +176,17 @@ if uploaded_file:
         valid = database[database["KODE_UNIK"] != "N/A"].copy()
         anomali = database[database["KODE_UNIK"] == "N/A"].copy()
 
+        # remove duplicate
         valid = valid.drop_duplicates(subset=["ID","KODE_UNIK"])
 
+        # sort
         valid = valid.sort_values("ID")
 
         hasil = pd.concat([valid, anomali], ignore_index=True)
 
-        # dashboard
+        # ==============================
+        # DASHBOARD
+        # ==============================
         col1, col2, col3 = st.columns(3)
 
         col1.metric("Total transaksi", len(database))
@@ -167,7 +197,9 @@ if uploaded_file:
 
         st.dataframe(hasil)
 
-        # download
+        # ==============================
+        # DOWNLOAD
+        # ==============================
         output = BytesIO()
 
         hasil.to_excel(output, index=False)
