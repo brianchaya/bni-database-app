@@ -7,16 +7,27 @@ from openpyxl.styles import PatternFill
 
 st.title("BNI Transaction Database Generator")
 
+mode = st.radio(
+    "Mode",
+    ["Buat Database Baru", "Update Database Existing"]
+)
+
 uploaded_file = st.file_uploader(
-    "Upload File (.xlsx / .xls / .csv)",
+    "Upload Rekening Koran",
     type=["xlsx","xls","csv"]
 )
+
+existing_file = None
+if mode == "Update Database Existing":
+    existing_file = st.file_uploader(
+        "Upload Database Existing",
+        type=["xlsx"]
+    )
 
 # =====================================
 # EXTRACT UNIQUE CODE BNI
 # =====================================
 def ambil_kode_unik(text):
-
     if pd.isna(text):
         return "N/A"
 
@@ -26,23 +37,23 @@ def ambil_kode_unik(text):
     if "otopay" in lower:
         return "IGNORE"
 
-    m = re.search(r'PEMINDAHAN DARI\s+(\d+)', text)
+    m = re.search(r'PEMINDAHAN DARI\\s+(\\d+)', text)
     if m:
         return m.group(1)
 
-    m = re.search(r'\|\s*(\d{16})', text)
+    m = re.search(r'\\|\\s*(\\d{16})', text)
     if m:
         return m.group(1)
 
-    m = re.search(r'(\d{16})\s+[A-Za-z]', text)
+    m = re.search(r'(\\d{16})\\s+[A-Za-z]', text)
     if m:
         return m.group(1)
 
-    m = re.search(r'PENGIRIM\s+(.*)', text)
+    m = re.search(r'PENGIRIM\\s+(.*)', text)
     if m:
         return m.group(1).strip()
 
-    m = re.search(r'\|\s*\d+\s+[A-Z\s]+\s([A-Z\s]+)$', text)
+    m = re.search(r'\\|\\s*\\d+\\s+[A-Z\\s]+\\s([A-Z\\s]+)$', text)
     if m:
         return m.group(1).strip()
 
@@ -55,141 +66,115 @@ def ambil_kode_unik(text):
     return "N/A"
 
 # =====================================
-# DETECT HEADER
+# HELPER PROCESS FUNCTION
 # =====================================
-def detect_header(file):
+def process_database(df, id_col, desc_col):
 
-    preview = pd.read_excel(file, header=None, nrows=20)
+    df["KODE_UNIK"] = df[desc_col].apply(ambil_kode_unik)
 
-    for i in range(20):
-        row = preview.iloc[i].astype(str).str.lower()
-        if any("description" in cell for cell in row):
-            return i
+    database = df[[id_col, "KODE_UNIK", desc_col]].copy()
+    database = database.rename(columns={id_col: "ID", desc_col: "Description"})
+    database["ID"] = pd.to_numeric(database["ID"], errors="coerce")
 
-    return 0
+    database = database[database["KODE_UNIK"] != "IGNORE"]
+
+    valid = database[database["KODE_UNIK"] != "N/A"].copy()
+    anomali = database[database["KODE_UNIK"] == "N/A"].copy()
+
+    dup_mask = valid.duplicated(subset=["ID"], keep=False) | valid.duplicated(subset=["KODE_UNIK"], keep=False)
+
+    normal = valid[~dup_mask].copy()
+    duplicate = valid[dup_mask].copy()
+
+    if not duplicate.empty:
+        grouped = duplicate.groupby(["KODE_UNIK"], dropna=False).agg({
+            "ID": lambda x: " ; ".join(sorted(set(map(str, x)))) ,
+            "Description": lambda x: " ; ".join(x)
+        }).reset_index()
+    else:
+        grouped = pd.DataFrame(columns=["KODE_UNIK","ID","Description"])
+
+    grouped = grouped[["ID","KODE_UNIK","Description"]]
+
+    normal = normal.sort_values("ID")
+
+    def extract_min_id(val):
+        try:
+            nums = [int(x.strip()) for x in str(val).split(";")]
+            return min(nums)
+        except:
+            return float('inf')
+
+    grouped["_sort_key"] = grouped["ID"].apply(extract_min_id)
+    grouped = grouped.sort_values("_sort_key").drop(columns=["_sort_key"])
+
+    hasil = pd.concat([normal, grouped, anomali], ignore_index=True)
+
+    return hasil, database, valid, anomali, grouped
 
 # =====================================
-# DETECT COLUMN
-# =====================================
-def detect_columns(df):
-
-    df.columns = df.columns.str.strip()
-
-    desc_col = None
-    id_col = None
-
-    for col in df.columns:
-
-        if "description" in col.lower():
-            desc_col = col
-
-        if col.lower() == "id":
-            id_col = col
-
-    return id_col, desc_col
-
-# =====================================
-# MAIN PROCESS
+# MAIN
 # =====================================
 if uploaded_file:
 
     try:
 
+        # LOAD NEW DATA
         if uploaded_file.name.endswith(".csv"):
             df = pd.read_csv(uploaded_file, sep=None, engine="python")
         else:
-            header_row = detect_header(uploaded_file)
-            df = pd.read_excel(uploaded_file, header=header_row)
+            df = pd.read_excel(uploaded_file)
 
-        id_col, desc_col = detect_columns(df)
+        df.columns = df.columns.str.strip()
 
-        if desc_col is None:
-            st.error("Kolom Description tidak ditemukan")
-            st.write(df.columns)
-            st.stop()
+        id_col = [c for c in df.columns if c.lower()=="id"][0]
+        desc_col = [c for c in df.columns if "description" in c.lower()][0]
 
-        if id_col is None:
-            st.error("Kolom ID tidak ditemukan")
-            st.write(df.columns)
-            st.stop()
+        hasil_baru, database_baru, valid_baru, anomali_baru, grouped_baru = process_database(df, id_col, desc_col)
 
         # ==============================
-        # PROCESS DATA
+        # UPDATE MODE
         # ==============================
-        df["KODE_UNIK"] = df[desc_col].apply(ambil_kode_unik)
+        if mode == "Update Database Existing" and existing_file:
 
-        database = df[[id_col, "KODE_UNIK", desc_col]].copy()
+            existing_df = pd.read_excel(existing_file)
 
-        database = database.rename(columns={
-            id_col: "ID",
-            desc_col: "Description"
-        })
+            # remove duplicates vs existing
+            merge_key = existing_df["ID"].astype(str) + "|" + existing_df["KODE_UNIK"].astype(str)
+            new_key = database_baru["ID"].astype(str) + "|" + database_baru["KODE_UNIK"].astype(str)
 
-        database["ID"] = pd.to_numeric(database["ID"], errors="coerce")
+            mask_new = ~new_key.isin(set(merge_key))
+            database_filtered = database_baru[mask_new]
 
-        # remove IGNORE
-        database = database[database["KODE_UNIK"] != "IGNORE"]
+            # reprocess filtered only
+            hasil_new, _, valid_new, anomali_new, grouped_new = process_database(database_filtered, "ID", "Description")
 
-        valid = database[database["KODE_UNIK"] != "N/A"].copy()
-        anomali = database[database["KODE_UNIK"] == "N/A"].copy()
+            st.subheader("Summary Update")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Data baru", len(database_filtered))
+            col2.metric("Duplicate (gabungan)", len(grouped_new))
+            col3.metric("N/A baru", len(anomali_new))
 
-        # ==============================
-        # GROUPING LOGIC (NEW)
-        # ==============================
-        # detect duplicates (by ID or KODE_UNIK)
-        dup_mask = valid.duplicated(subset=["ID"], keep=False) | valid.duplicated(subset=["KODE_UNIK"], keep=False)
+            # gabungkan visual (dipisah 3 baris kosong)
+            spacer = pd.DataFrame([[None,None,None]]*3, columns=["ID","KODE_UNIK","Description"])
+            final_df = pd.concat([existing_df, spacer, hasil_new], ignore_index=True)
 
-        normal = valid[~dup_mask].copy()
-        duplicate = valid[dup_mask].copy()
-
-        # group duplicates
-        if not duplicate.empty:
-            grouped = duplicate.groupby(["KODE_UNIK"], dropna=False).agg({
-                "ID": lambda x: " ; ".join(sorted(set(map(str, x)))) ,
-                "Description": lambda x: " ; ".join(x)
-            }).reset_index()
         else:
-            grouped = pd.DataFrame(columns=["KODE_UNIK","ID","Description"])
+            final_df = hasil_baru
 
-        # reorder columns
-        grouped = grouped[["ID","KODE_UNIK","Description"]]
-
-        # sort
-        normal = normal.sort_values("ID")
-
-        # IMPORTANT: sort grouped by smallest ID inside the string
-        def extract_min_id(val):
-            try:
-                nums = [int(x.strip()) for x in str(val).split(";")]
-                return min(nums)
-            except:
-                return float('inf')
-
-        grouped = grouped.copy()
-        grouped["_sort_key"] = grouped["ID"].apply(extract_min_id)
-        grouped = grouped.sort_values("_sort_key").drop(columns=["_sort_key"])
-
-        # final result: normal -> grouped -> N/A
-        hasil = pd.concat([normal, grouped, anomali], ignore_index=True)
-
-        # ==============================
-        # DASHBOARD
-        # ==============================
-        col1, col2, col3 = st.columns(3)
-
-        col1.metric("Total transaksi", len(database))
-        col2.metric("Database bersih", len(valid))
-        col3.metric("Perlu cek manual (N/A)", len(anomali))
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total transaksi", len(database_baru))
+            col2.metric("Database bersih", len(valid_baru))
+            col3.metric("Perlu cek manual (N/A)", len(anomali_baru))
 
         st.success("Database berhasil dibuat")
-
-        st.dataframe(hasil)
+        st.dataframe(final_df)
 
         # ==============================
-        # EXPORT WITH COLOR
+        # EXPORT
         # ==============================
         output = BytesIO()
-        hasil.to_excel(output, index=False)
+        final_df.to_excel(output, index=False)
 
         output.seek(0)
         wb = load_workbook(output)
@@ -198,8 +183,7 @@ if uploaded_file:
         yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
         red = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
 
-        # apply coloring
-        for i, row in hasil.iterrows():
+        for i, row in final_df.iterrows():
             excel_row = i + 2
 
             if row["KODE_UNIK"] == "N/A":
@@ -220,6 +204,5 @@ if uploaded_file:
         )
 
     except Exception as e:
-
         st.error("Terjadi error saat memproses file")
         st.write(e)
