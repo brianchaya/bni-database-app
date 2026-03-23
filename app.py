@@ -156,7 +156,18 @@ if uploaded_file:
 
         # sort
         normal = normal.sort_values("ID")
-        grouped = grouped.sort_values("ID")
+
+        # IMPORTANT: sort grouped by smallest ID inside the string
+        def extract_min_id(val):
+            try:
+                nums = [int(x.strip()) for x in str(val).split(";")]
+                return min(nums)
+            except:
+                return float('inf')
+
+        grouped = grouped.copy()
+        grouped["_sort_key"] = grouped["ID"].apply(extract_min_id)
+        grouped = grouped.sort_values("_sort_key").drop(columns=["_sort_key"])
 
         # final result: normal -> grouped -> N/A
         hasil = pd.concat([normal, grouped, anomali], ignore_index=True)
