@@ -81,65 +81,22 @@ def process_database(df, id_col, desc_col):
     valid = database[database["KODE_UNIK"] != "N/A"].copy()
     anomali = database[database["KODE_UNIK"] == "N/A"].copy()
 
-    # ==============================
-    # SMART GROUPING (BIDIRECTIONAL)
-    # ==============================
-    groups = []
-    visited = set()
+    dup_mask = valid.duplicated(subset=["ID"], keep=False) | valid.duplicated(subset=["KODE_UNIK"], keep=False)
 
-    for idx, row in valid.iterrows():
-        if idx in visited:
-            continue
+    normal = valid[~dup_mask].copy()
+    duplicate = valid[dup_mask].copy()
 
-        stack = [idx]
-        connected = set()
+    if not duplicate.empty:
+        grouped = duplicate.groupby(["KODE_UNIK"], dropna=False).agg({
+            "ID": lambda x: " ; ".join(sorted(set(map(str, x)))) ,
+            "Description": lambda x: " ; ".join(x)
+        }).reset_index()
+    else:
+        grouped = pd.DataFrame(columns=["KODE_UNIK","ID","Description"])
 
-        while stack:
-            current = stack.pop()
-            if current in connected:
-                continue
+    grouped = grouped[["ID","KODE_UNIK","Description"]]
 
-            connected.add(current)
-            visited.add(current)
-
-            cur_id = valid.loc[current, "ID"]
-            cur_kode = valid.loc[current, "KODE_UNIK"]
-
-            neighbors = valid[
-                (valid["ID"] == cur_id) |
-                (valid["KODE_UNIK"] == cur_kode)
-            ].index.tolist()
-
-            for n in neighbors:
-                if n not in connected:
-                    stack.append(n)
-
-        groups.append(list(connected))
-
-    normal_rows = []
-    grouped_rows = []
-
-    for g in groups:
-        subset = valid.loc[g]
-
-        if len(subset) == 1:
-            normal_rows.append(subset.iloc[0])
-        else:
-            ids = sorted(set(map(int, subset["ID"].dropna())))
-            kode = " ; ".join(sorted(set(subset["KODE_UNIK"])))
-            desc = " ; ".join(subset["Description"])
-
-            grouped_rows.append({
-                "ID": " ; ".join(map(str, ids)),
-                "KODE_UNIK": kode,
-                "Description": desc
-            })
-
-    normal = pd.DataFrame(normal_rows)
-    grouped = pd.DataFrame(grouped_rows)
-
-    if not normal.empty:
-        normal = normal.sort_values("ID")
+    normal = normal.sort_values("ID")
 
     def extract_min_id(val):
         try:
@@ -148,9 +105,8 @@ def process_database(df, id_col, desc_col):
         except:
             return float('inf')
 
-    if not grouped.empty:
-        grouped["_sort_key"] = grouped["ID"].apply(extract_min_id)
-        grouped = grouped.sort_values("_sort_key").drop(columns=["_sort_key"])
+    grouped["_sort_key"] = grouped["ID"].apply(extract_min_id)
+    grouped = grouped.sort_values("_sort_key").drop(columns=["_sort_key"])
 
     hasil = pd.concat([normal, grouped, anomali], ignore_index=True)
 
@@ -163,6 +119,7 @@ if uploaded_file:
 
     try:
 
+        # LOAD NEW DATA
         if uploaded_file.name.endswith(".csv"):
             df = pd.read_csv(uploaded_file, sep=None, engine="python")
         else:
@@ -175,16 +132,21 @@ if uploaded_file:
 
         hasil_baru, database_baru, valid_baru, anomali_baru, grouped_baru = process_database(df, id_col, desc_col)
 
+        # ==============================
+        # UPDATE MODE
+        # ==============================
         if mode == "Update Database Existing" and existing_file:
 
             existing_df = pd.read_excel(existing_file)
 
+            # remove duplicates vs existing
             merge_key = existing_df["ID"].astype(str) + "|" + existing_df["KODE_UNIK"].astype(str)
             new_key = database_baru["ID"].astype(str) + "|" + database_baru["KODE_UNIK"].astype(str)
 
             mask_new = ~new_key.isin(set(merge_key))
             database_filtered = database_baru[mask_new]
 
+            # reprocess filtered only
             hasil_new, _, valid_new, anomali_new, grouped_new = process_database(database_filtered, "ID", "Description")
 
             st.subheader("Summary Update")
@@ -193,6 +155,7 @@ if uploaded_file:
             col2.metric("Duplicate (gabungan)", len(grouped_new))
             col3.metric("N/A baru", len(anomali_new))
 
+            # gabungkan visual (dipisah 3 baris kosong)
             spacer = pd.DataFrame([[None,None,None]]*3, columns=["ID","KODE_UNIK","Description"])
             final_df = pd.concat([existing_df, spacer, hasil_new], ignore_index=True)
 
@@ -207,6 +170,9 @@ if uploaded_file:
         st.success("Database berhasil dibuat")
         st.dataframe(final_df)
 
+        # ==============================
+        # EXPORT
+        # ==============================
         output = BytesIO()
         final_df.to_excel(output, index=False)
 
