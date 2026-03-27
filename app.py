@@ -3,35 +3,33 @@ import pandas as pd
 import re
 from io import BytesIO
 
-st.title("BNI Transaction Database Generator (Upgraded)")
+st.title("BNI Transaction Database Generator")
 
-uploaded_file = st.file_uploader(
-    "Upload File (.xlsx / .xls / .csv)",
-    type=["xlsx","xls","csv"]
-)
+# ==============================
+# UPLOAD
+# ==============================
+uploaded_file = st.file_uploader("Upload Bank Statement", type=["xlsx","xls","csv"])
+existing_file = st.file_uploader("Attach Existing Database (Optional)", type=["xlsx"])
 
-existing_file = st.file_uploader(
-    "Attach Existing Database (Optional)",
-    type=["xlsx"]
-)
-
-# =====================================
-# NORMALIZE (AMBIL DARI BRI)
-# =====================================
+# ==============================
+# NORMALIZE KODE (SAMA PERSIS BRI)
+# ==============================
 def normalize_kode(x):
     x = str(x).strip().upper()
+
     clean = re.sub(r'[^A-Z0-9]', '', x)
 
     if re.match(r'^N+A*$', clean) or re.match(r'^NA\d*$', clean):
         return "N/A"
 
     x = re.sub(r'\s+', ' ', x)
+
     return x
 
-# =====================================
-# EXTRACT BNI (TETAP)
-# =====================================
-def ambil_kode_unik(text):
+# ==============================
+# 🔥 BNI EXTRACT (GANTI DI SINI SAJA)
+# ==============================
+def extract_code(text):
 
     if pd.isna(text):
         return "N/A"
@@ -67,64 +65,93 @@ def ambil_kode_unik(text):
 
     return "N/A"
 
-# =====================================
-# LOAD FILE
-# =====================================
-def load_file(file):
+# ==============================
+# LOAD STATEMENT (SAMA)
+# ==============================
+def load_statement(file):
 
     if file.name.endswith(".csv"):
-        return pd.read_csv(file, sep=None, engine="python")
+        return pd.read_csv(file)
 
-    preview = pd.read_excel(file, header=None, nrows=20)
+    xls = pd.ExcelFile(file)
 
-    for i in range(20):
-        row = preview.iloc[i].astype(str).str.lower()
-        if any("description" in x for x in row):
-            return pd.read_excel(file, header=i)
+    for sheet in xls.sheet_names[:10]:
+        preview = pd.read_excel(xls, sheet_name=sheet, header=None, nrows=20)
 
-    return pd.read_excel(file)
+        for i in range(len(preview)):
+            row = preview.iloc[i].astype(str).str.lower()
 
-# =====================================
-# DETECT COLUMN
-# =====================================
-def detect_columns(df):
+            if any("uraian" in x or "description" in x for x in row):
+                return pd.read_excel(xls, sheet_name=sheet, header=i)
 
-    df.columns = df.columns.str.strip()
+    return pd.read_excel(xls, sheet_name=0)
 
-    id_col = None
-    desc_col = None
+# ==============================
+# LOAD EXISTING (SAMA)
+# ==============================
+def load_existing(file):
 
-    for col in df.columns:
-        if col.lower() == "id":
-            id_col = col
-        if "description" in col.lower():
-            desc_col = col
+    xls = pd.ExcelFile(file)
 
-    return id_col, desc_col
+    for sheet in xls.sheet_names[:10]:
+        df = pd.read_excel(xls, sheet_name=sheet)
 
-# =====================================
-# PREPARE DATA
-# =====================================
-def prepare_data(df, id_col, desc_col):
+        cols = [str(c).upper() for c in df.columns]
 
-    df["KODE_UNIK"] = df[desc_col].apply(ambil_kode_unik)
+        if "ID" in cols and "KODE_UNIK" in cols:
+            return df
+
+    return pd.read_excel(xls, sheet_name=0)
+
+# ==============================
+# PREPARE NEW (SAMA + IGNORE FIX)
+# ==============================
+def prepare_new(df):
+
+    if df is None or df.empty:
+        st.error("File could not be read properly.")
+        st.stop()
+
+    df.columns = df.columns.astype(str).str.strip()
+
+    id_cols = [c for c in df.columns if c.strip().upper() == "ID"]
+    if len(id_cols) == 0:
+        st.error("Column 'ID' not found.")
+        st.stop()
+
+    id_col = id_cols[0]
+
+    desc_candidates = [
+        c for c in df.columns
+        if "uraian" in c.lower() or "description" in c.lower()
+    ]
+
+    if len(desc_candidates) == 0:
+        st.error("Description column not found.")
+        st.stop()
+
+    desc_col = desc_candidates[0]
+
+    df["KODE_UNIK"] = df[desc_col].apply(extract_code)
+
+    # 🔥 FILTER IGNORE DI SINI
+    df = df[df["KODE_UNIK"] != "IGNORE"]
+
     df["KODE_UNIK"] = df["KODE_UNIK"].apply(normalize_kode)
 
     db = df[[id_col, "KODE_UNIK", desc_col]].copy()
-
     db.columns = ["ID", "KODE_UNIK", "Description"]
 
-    db = db[db["KODE_UNIK"] != "IGNORE"]
-
     db["ID"] = db["ID"].astype(str).replace(
-        ["nan","None","NaT",""], "N/A"
+        ["nan", "None", "NaT", ""], "N/A"
     )
 
     return db
 
-# =====================================
-# FILTER NEW ONLY (ANTI DUPLIKAT)
-# =====================================
+# ==============================
+# 🔥 SISANYA = 100% COPY BRI LU
+# ==============================
+
 def filter_new_only(existing, new):
 
     existing["KODE_UNIK"] = existing["KODE_UNIK"].apply(normalize_kode)
@@ -149,86 +176,84 @@ def filter_new_only(existing, new):
         ~new_na["Description"].isin(existing_na_desc)
     ]
 
-    return pd.concat([new_valid, new_na], ignore_index=True)
+    filtered = pd.concat([new_valid, new_na], ignore_index=True)
 
-# =====================================
-# GROUPING BNI STYLE (RELATIONAL)
-# =====================================
-def grouping_bni(db):
+    return filtered
+
+def clean_ids(x):
+
+    ids = []
+
+    for val in x.dropna():
+        parts = str(val).split(";")
+
+        for p in parts:
+            p = p.strip()
+            found = re.findall(r'\d+', p)
+
+            if found:
+                ids.extend(found)
+
+    return " ; ".join(sorted(set(ids))) if ids else "N/A"
+
+def grouping(db):
 
     db = db.copy()
     db["KODE_UNIK"] = db["KODE_UNIK"].apply(normalize_kode)
 
-    valid = db[db["KODE_UNIK"] != "N/A"].copy()
-    na = db[db["KODE_UNIK"] == "N/A"].copy()
+    db_na = db[db["KODE_UNIK"] == "N/A"].copy()
+    db_valid = db[db["KODE_UNIK"] != "N/A"].copy()
 
-    grouped = []
-    used = set()
+    db_valid = db_valid.drop_duplicates(subset=["ID", "KODE_UNIK", "Description"])
 
-    for i, row in valid.iterrows():
-        if i in used:
-            continue
+    grouped = db_valid.groupby("KODE_UNIK").agg({
+        "ID": clean_ids,
+        "Description": lambda x: " ; ".join(x.astype(str))
+    }).reset_index()
 
-        group = valid[
-            (valid["KODE_UNIK"] == row["KODE_UNIK"]) |
-            (valid["ID"] == row["ID"])
-        ]
+    def is_valid_id(x):
+        nums = re.findall(r'\d+', str(x))
+        return len(nums) > 0
 
-        used.update(group.index)
+    grouped["TYPE"] = grouped["ID"].apply(
+        lambda x: "NA" if not is_valid_id(x)
+        else ("DOUBLE" if ";" in x else "NORMAL")
+    )
 
-        ids = sorted(set(group["ID"]))
-        kode = sorted(set(group["KODE_UNIK"]))
-        desc = list(group["Description"])
+    normal = grouped[grouped["TYPE"] == "NORMAL"]
+    double = grouped[grouped["TYPE"] == "DOUBLE"]
 
-        grouped.append({
-            "ID": " ; ".join(ids),
-            "KODE_UNIK": " ; ".join(kode),
-            "Description": " ; ".join(desc),
-            "TYPE": "DOUBLE" if len(group) > 1 else "NORMAL"
-        })
+    db_na = db_na.drop_duplicates(subset=["Description"])
+    db_na["TYPE"] = "NA"
 
-    grouped_df = pd.DataFrame(grouped)
+    return normal, double, db_na
 
-    normal = grouped_df[grouped_df["TYPE"] == "NORMAL"]
-    double = grouped_df[grouped_df["TYPE"] == "DOUBLE"]
-
-    na = na.drop_duplicates(subset=["Description"])
-    na["TYPE"] = "NA"
-
-    return normal, double, na
-
-# =====================================
-# MAIN
-# =====================================
+# ==============================
+# MAIN (SAMA PERSIS)
+# ==============================
 if uploaded_file:
 
-    df = load_file(uploaded_file)
-    id_col, desc_col = detect_columns(df)
-
-    if not id_col or not desc_col:
-        st.error("Kolom ID / Description tidak ditemukan")
-        st.stop()
-
-    new_db = prepare_data(df, id_col, desc_col)
+    df = load_statement(uploaded_file)
+    new_db = prepare_new(df)
 
     if existing_file:
 
-        exist_df = pd.read_excel(existing_file)
-        exist_df.columns = [c.upper() for c in exist_df.columns]
+        exist_df_raw = load_existing(existing_file)
+        exist_df_raw.columns = [c.upper() for c in exist_df_raw.columns]
 
-        exist_df = exist_df[["ID","KODE_UNIK","DESCRIPTION"]]
-        exist_df.columns = ["ID","KODE_UNIK","Description"]
+        exist_df_raw = exist_df_raw[["ID", "KODE_UNIK", "DESCRIPTION"]]
+        exist_df_raw.columns = ["ID", "KODE_UNIK", "Description"]
 
-        exist_df = exist_df.fillna("N/A")
+        exist_df_raw = exist_df_raw.fillna("N/A")
 
-        filtered_new = filter_new_only(exist_df, new_db)
+        filtered_new = filter_new_only(exist_df_raw, new_db)
 
         if filtered_new.empty:
-            st.warning("No new data")
+            st.warning("No new valid data found.")
             new_final = pd.DataFrame()
         else:
-            n_normal, n_double, n_na = grouping_bni(filtered_new)
-            new_final = pd.concat([n_normal,n_double,n_na], ignore_index=True)
+            n_normal, n_double, n_na = grouping(filtered_new)
+            new_final = pd.concat([n_normal, n_double, n_na], ignore_index=True)
 
         separator = pd.DataFrame({
             "ID": ["--- NEW DATA ---"],
@@ -237,15 +262,19 @@ if uploaded_file:
             "TYPE": [""]
         })
 
-        final = pd.concat([exist_df, separator, new_final], ignore_index=True)
+        final = pd.concat([
+            exist_df_raw,
+            separator,
+            new_final
+        ], ignore_index=True)
 
         st.success("Mode: UPDATE DATABASE")
 
     else:
 
-        n_normal, n_double, n_na = grouping_bni(new_db)
+        normal, double, na = grouping(new_db)
 
-        final = pd.concat([n_normal,n_double,n_na], ignore_index=True)
+        final = pd.concat([normal, double, na], ignore_index=True)
 
         st.success("Mode: CREATE NEW DATABASE")
 
