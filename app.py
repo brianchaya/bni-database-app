@@ -79,8 +79,10 @@ def detect_columns(df):
     id_col = None
 
     for col in df.columns:
+
         if "description" in col.lower():
             desc_col = col
+
         if col.lower() == "id":
             id_col = col
 
@@ -103,12 +105,17 @@ if uploaded_file:
 
         if desc_col is None:
             st.error("Kolom Description tidak ditemukan")
+            st.write(df.columns)
             st.stop()
 
         if id_col is None:
             st.error("Kolom ID tidak ditemukan")
+            st.write(df.columns)
             st.stop()
 
+        # ==============================
+        # PROCESS DATA
+        # ==============================
         df["KODE_UNIK"] = df[desc_col].apply(ambil_kode_unik)
 
         database = df[[id_col, "KODE_UNIK", desc_col]].copy()
@@ -120,73 +127,56 @@ if uploaded_file:
 
         database["ID"] = pd.to_numeric(database["ID"], errors="coerce")
 
+        # remove IGNORE
         database = database[database["KODE_UNIK"] != "IGNORE"]
 
         valid = database[database["KODE_UNIK"] != "N/A"].copy()
         anomali = database[database["KODE_UNIK"] == "N/A"].copy()
 
-        # =====================================
-        # GROUPING LOGIC (INI YANG BARU)
-        # =====================================
-        grouped = []
+        # ==============================
+        # GROUPING LOGIC (NEW)
+        # ==============================
+        # detect duplicates (by ID or KODE_UNIK)
+        dup_mask = valid.duplicated(subset=["ID"], keep=False) | valid.duplicated(subset=["KODE_UNIK"], keep=False)
 
-        used_index = set()
+        normal = valid[~dup_mask].copy()
+        duplicate = valid[dup_mask].copy()
 
-        for i, row in valid.iterrows():
-            if i in used_index:
-                continue
+        # group duplicates
+        if not duplicate.empty:
+            grouped = duplicate.groupby(["KODE_UNIK"], dropna=False).agg({
+                "ID": lambda x: " ; ".join(sorted(set(map(str, x)))) ,
+                "Description": lambda x: " ; ".join(x)
+            }).reset_index()
+        else:
+            grouped = pd.DataFrame(columns=["KODE_UNIK","ID","Description"])
 
-            same_group = valid[
-                (valid["KODE_UNIK"] == row["KODE_UNIK"]) |
-                (valid["ID"] == row["ID"])
-            ]
+        # reorder columns
+        grouped = grouped[["ID","KODE_UNIK","Description"]]
 
-            used_index.update(same_group.index)
+        # sort
+        normal = normal.sort_values("ID")
+        grouped = grouped.sort_values("ID")
 
-            ids = sorted(set(same_group["ID"].dropna()))
-            kode = sorted(set(same_group["KODE_UNIK"]))
-            desc = list(same_group["Description"])
+        # final result: normal -> grouped -> N/A
+        hasil = pd.concat([normal, grouped, anomali], ignore_index=True)
 
-            grouped.append({
-                "ID": " ; ".join(map(lambda x: str(int(x)), ids)),
-                "KODE_UNIK": " ; ".join(kode),
-                "Description": " ; ".join(desc),
-                "TYPE": "DOUBLE" if len(same_group) > 1 else "NORMAL",
-                "SORT_KEY": min(ids) if len(ids) > 0 else 0
-            })
-
-        grouped_df = pd.DataFrame(grouped)
-
-        normal = grouped_df[grouped_df["TYPE"] == "NORMAL"].copy()
-        double = grouped_df[grouped_df["TYPE"] == "DOUBLE"].copy()
-
-        normal = normal.sort_values("SORT_KEY")
-        double = double.sort_values("SORT_KEY")
-        anomali = anomali.sort_values("ID")
-
-        anomali["TYPE"] = "NA"
-
-        hasil = pd.concat([
-            normal.drop(columns=["TYPE","SORT_KEY"]),
-            double.drop(columns=["TYPE","SORT_KEY"]),
-            anomali
-        ], ignore_index=True)
-
-        # =====================================
+        # ==============================
         # DASHBOARD
-        # =====================================
+        # ==============================
         col1, col2, col3 = st.columns(3)
 
         col1.metric("Total transaksi", len(database))
-        col2.metric("Database bersih", len(normal) + len(double))
+        col2.metric("Database bersih", len(valid))
         col3.metric("Perlu cek manual (N/A)", len(anomali))
 
         st.success("Database berhasil dibuat")
+
         st.dataframe(hasil)
 
-        # =====================================
-        # EXPORT + COLORING
-        # =====================================
+        # ==============================
+        # EXPORT WITH COLOR
+        # ==============================
         output = BytesIO()
         hasil.to_excel(output, index=False)
 
@@ -197,18 +187,17 @@ if uploaded_file:
         yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
         red = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
 
-        for i, row in enumerate(grouped):
+        # apply coloring
+        for i, row in hasil.iterrows():
             excel_row = i + 2
 
-            if row["TYPE"] == "DOUBLE":
+            if row["KODE_UNIK"] == "N/A":
+                for col in range(1, 4):
+                    ws.cell(row=excel_row, column=col).fill = red
+
+            elif ";" in str(row["ID"]):
                 for col in range(1, 4):
                     ws.cell(row=excel_row, column=col).fill = yellow
-
-        start_na = len(normal) + len(double) + 2
-
-        for row in range(start_na, start_na + len(anomali)):
-            for col in range(1, 4):
-                ws.cell(row=row, column=col).fill = red
 
         final_output = BytesIO()
         wb.save(final_output)
@@ -220,5 +209,6 @@ if uploaded_file:
         )
 
     except Exception as e:
+
         st.error("Terjadi error saat memproses file")
         st.write(e)
