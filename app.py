@@ -12,7 +12,7 @@ uploaded_file = st.file_uploader("Upload Bank Statement", type=["xlsx","xls","cs
 existing_file = st.file_uploader("Attach Existing Database (Optional)", type=["xlsx"])
 
 # ==============================
-# NORMALIZE KODE (SAMA PERSIS BRI)
+# NORMALIZE KODE (SUPER STRONG)
 # ==============================
 def normalize_kode(x):
     x = str(x).strip().upper()
@@ -27,7 +27,7 @@ def normalize_kode(x):
     return x
 
 # ==============================
-# 🔥 BNI EXTRACT (GANTI DI SINI SAJA)
+# 🔥 BNI EXTRACT (SATU2NYA YG DIUBAH)
 # ==============================
 def extract_code(text):
 
@@ -60,13 +60,16 @@ def extract_code(text):
     if m:
         return m.group(1).strip()
 
+    if "pemindahan dari" in lower and "`" in text:
+        return "N/A"
+
     if "jakom" in lower:
         return "IGNORE"
 
     return "N/A"
 
 # ==============================
-# LOAD STATEMENT (SAMA)
+# LOAD STATEMENT
 # ==============================
 def load_statement(file):
 
@@ -87,7 +90,7 @@ def load_statement(file):
     return pd.read_excel(xls, sheet_name=0)
 
 # ==============================
-# LOAD EXISTING (SAMA)
+# LOAD EXISTING
 # ==============================
 def load_existing(file):
 
@@ -104,7 +107,54 @@ def load_existing(file):
     return pd.read_excel(xls, sheet_name=0)
 
 # ==============================
-# PREPARE NEW (SAMA + IGNORE FIX)
+# SPLIT EXISTING & OLD NEW
+# ==============================
+def split_existing_and_new(df):
+
+    df = df.copy()
+
+    marker_idx = df[
+        df["ID"].astype(str).str.contains("--- NEW DATA ---", na=False)
+    ].index
+
+    if len(marker_idx) == 0:
+        return df, pd.DataFrame(columns=df.columns)
+
+    split_idx = marker_idx[0]
+
+    existing = df.iloc[:split_idx].copy()
+    new_old = df.iloc[split_idx+1:].copy()
+
+    existing = existing[existing["ID"] != ""]
+    new_old = new_old[new_old["ID"] != ""]
+
+    return existing, new_old
+
+# ==============================
+# MERGE EXISTING + OLD NEW
+# ==============================
+def merge_existing_with_old_new(existing, old_new):
+
+    if old_new is None or old_new.empty:
+        return existing
+
+    combined = pd.concat([existing, old_new], ignore_index=True)
+
+    normal, double, na = grouping(combined)
+
+    merged = pd.concat([normal, double, na], ignore_index=True)
+
+    def get_min_id(x):
+        nums = re.findall(r'\d+', str(x))
+        return int(nums[0]) if nums else 999999999
+
+    merged["SORT_KEY"] = merged["ID"].apply(get_min_id)
+    merged = merged.sort_values("SORT_KEY").drop(columns="SORT_KEY")
+
+    return merged
+
+# ==============================
+# PREPARE NEW DATA (DITAMBAH IGNORE FILTER)
 # ==============================
 def prepare_new(df):
 
@@ -134,7 +184,7 @@ def prepare_new(df):
 
     df["KODE_UNIK"] = df[desc_col].apply(extract_code)
 
-    # 🔥 FILTER IGNORE DI SINI
+    # 🔥 TAMBAHAN WAJIB
     df = df[df["KODE_UNIK"] != "IGNORE"]
 
     df["KODE_UNIK"] = df["KODE_UNIK"].apply(normalize_kode)
@@ -149,9 +199,8 @@ def prepare_new(df):
     return db
 
 # ==============================
-# 🔥 SISANYA = 100% COPY BRI LU
+# FILTER NEW ONLY (NO N/A)
 # ==============================
-
 def filter_new_only(existing, new):
 
     existing["KODE_UNIK"] = existing["KODE_UNIK"].apply(normalize_kode)
@@ -180,6 +229,9 @@ def filter_new_only(existing, new):
 
     return filtered
 
+# ==============================
+# CLEAN ID
+# ==============================
 def clean_ids(x):
 
     ids = []
@@ -196,6 +248,9 @@ def clean_ids(x):
 
     return " ; ".join(sorted(set(ids))) if ids else "N/A"
 
+# ==============================
+# GROUPING
+# ==============================
 def grouping(db):
 
     db = db.copy()
@@ -228,8 +283,23 @@ def grouping(db):
 
     return normal, double, db_na
 
+def sort_by_id(df):
+
+    def get_min_id(x):
+        nums = re.findall(r'\d+', str(x))
+        return min([int(n) for n in nums]) if nums else 999999999
+
+    df = df.copy()
+
+    df["IS_NA"] = df["KODE_UNIK"].apply(lambda x: 1 if x == "N/A" else 0)
+    df["SORT_KEY"] = df["ID"].apply(get_min_id)
+
+    df = df.sort_values(["IS_NA", "SORT_KEY"]).drop(columns=["SORT_KEY", "IS_NA"])
+
+    return df
+
 # ==============================
-# MAIN (SAMA PERSIS)
+# MAIN (100% SAMA)
 # ==============================
 if uploaded_file:
 
@@ -241,19 +311,55 @@ if uploaded_file:
         exist_df_raw = load_existing(existing_file)
         exist_df_raw.columns = [c.upper() for c in exist_df_raw.columns]
 
+        if "DESCRIPTION" not in exist_df_raw.columns:
+            exist_df_raw["DESCRIPTION"] = ""
+
         exist_df_raw = exist_df_raw[["ID", "KODE_UNIK", "DESCRIPTION"]]
         exist_df_raw.columns = ["ID", "KODE_UNIK", "Description"]
 
         exist_df_raw = exist_df_raw.fillna("N/A")
 
-        filtered_new = filter_new_only(exist_df_raw, new_db)
+        exist_df_raw["ID"] = exist_df_raw["ID"].astype(str).replace(
+            ["nan", "None", "NaT", ""], "N/A"
+        )
+        
+        exist_df_raw["KODE_UNIK"] = exist_df_raw["KODE_UNIK"].astype(str).replace(
+            ["nan", "None", "NaT", ""], "N/A"
+        )
+        
+        exist_df_raw["Description"] = exist_df_raw["Description"].astype(str).replace(
+            ["nan", "None", "NaT", ""], ""
+        )
+
+        exist_df, old_new = split_existing_and_new(exist_df_raw)
+
+        exist_df = pd.concat([exist_df, old_new], ignore_index=True)
+        exist_df = sort_by_id(exist_df)
+
+        exist_df["TYPE"] = "EXISTING"
+        exist_df["KODE_UNIK"] = exist_df["KODE_UNIK"].apply(normalize_kode)
+
+        filtered_new = filter_new_only(exist_df, new_db)
 
         if filtered_new.empty:
             st.warning("No new valid data found.")
-            new_final = pd.DataFrame()
+            new_final = pd.DataFrame(columns=["ID","KODE_UNIK","Description","TYPE"])
+            n_normal = n_double = n_na = pd.DataFrame()
         else:
             n_normal, n_double, n_na = grouping(filtered_new)
             new_final = pd.concat([n_normal, n_double, n_na], ignore_index=True)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("New Normal", len(n_normal))
+        col2.metric("New Merged", len(n_double))
+        col3.metric("New NA", len(n_na))
+
+        spacer = pd.DataFrame({
+            "ID": ["", ""],
+            "KODE_UNIK": ["", ""],
+            "Description": ["", ""],
+            "TYPE": ["", ""]
+        })
 
         separator = pd.DataFrame({
             "ID": ["--- NEW DATA ---"],
@@ -263,7 +369,8 @@ if uploaded_file:
         })
 
         final = pd.concat([
-            exist_df_raw,
+            exist_df,
+            spacer,
             separator,
             new_final
         ], ignore_index=True)
@@ -274,6 +381,15 @@ if uploaded_file:
 
         normal, double, na = grouping(new_db)
 
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Normal Rows", len(normal))
+        col2.metric("Merged Rows", len(double))
+        col3.metric("Need Review (N/A)", len(na))
+
+        normal = sort_by_id(normal)
+        double = sort_by_id(double)
+        na = sort_by_id(na)
+
         final = pd.concat([normal, double, na], ignore_index=True)
 
         st.success("Mode: CREATE NEW DATABASE")
@@ -281,7 +397,13 @@ if uploaded_file:
     st.dataframe(final)
 
     output = BytesIO()
-    final.to_excel(output, index=False)
+
+    try:
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            final.to_excel(writer, index=False)
+    except:
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            final.to_excel(writer, index=False)
 
     st.download_button(
         "Download Excel",
