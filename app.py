@@ -27,7 +27,7 @@ def normalize_kode(x):
     return x
 
 # ==============================
-# 🔥 BNI EXTRACT (SATU2NYA YG DIUBAH)
+# 🔥 EXTRACT UNIQUE CODE (BNI)
 # ==============================
 def extract_code(text):
 
@@ -154,7 +154,7 @@ def merge_existing_with_old_new(existing, old_new):
     return merged
 
 # ==============================
-# PREPARE NEW DATA (DITAMBAH IGNORE FILTER)
+# PREPARE NEW DATA
 # ==============================
 def prepare_new(df):
 
@@ -184,7 +184,7 @@ def prepare_new(df):
 
     df["KODE_UNIK"] = df[desc_col].apply(extract_code)
 
-    # 🔥 TAMBAHAN WAJIB
+    # 🔥 SATU-SATUNYA TAMBAHAN
     df = df[df["KODE_UNIK"] != "IGNORE"]
 
     df["KODE_UNIK"] = df["KODE_UNIK"].apply(normalize_kode)
@@ -299,7 +299,7 @@ def sort_by_id(df):
     return df
 
 # ==============================
-# MAIN (100% SAMA)
+# MAIN
 # ==============================
 if uploaded_file:
 
