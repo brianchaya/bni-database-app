@@ -77,7 +77,7 @@ def load_statement(file):
 
         for i in range(len(preview)):
             row = preview.iloc[i].astype(str).str.lower()
-            if any("uraian" in x or "description" in x for x in row):
+            if any("uraian" in str(x).lower() or "description" in str(x).lower() for x in row):
                 return pd.read_excel(xls, sheet_name=sheet, header=i)
 
     return pd.read_excel(xls, sheet_name=0)
